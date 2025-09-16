@@ -141,3 +141,6 @@ Thumbs.db
 
 # Project specific
 *.log
+
+# MCP configuration (contains API keys)
+mcp.json
