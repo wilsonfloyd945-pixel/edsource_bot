@@ -1,14 +1,10 @@
 import os, textwrap
 from fastapi import FastAPI, Request, Header, HTTPException
 import httpx
-import google.generativeai as genai
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
+Z_AI_API_KEY = os.environ["Z_AI_API_KEY"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
-
-genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 app = FastAPI()
 
@@ -32,8 +28,27 @@ async def tg_webhook(request: Request,
         return {"status": "ignored"}
 
     try:
-        response = model.generate_content(text)
-        reply = (response.text or "Пустой ответ").strip()
+        # Отправляем запрос к z.ai API
+        zai_url = "https://api.z.ai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {Z_AI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "zephyr-7b-beta",
+            "messages": [
+                {"role": "user", "content": text}
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.7
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as http:
+            response = await http.post(zai_url, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+            reply = result["choices"][0]["message"]["content"].strip()
+            
     except Exception as e:
         reply = f"Ошибка: {e}"
 
