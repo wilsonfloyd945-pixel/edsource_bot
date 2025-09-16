@@ -1,14 +1,14 @@
 import os, textwrap
 from fastapi import FastAPI, Request, Header, HTTPException
 import httpx
-from google import genai
+import google.generativeai as genai
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
-client = genai.Client(api_key=GOOGLE_API_KEY)
-MODEL_ID = "gemini-2.0-flash"
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 app = FastAPI()
 
@@ -32,8 +32,8 @@ async def tg_webhook(request: Request,
         return {"status": "ignored"}
 
     try:
-        resp = client.models.generate_content(model=MODEL_ID, contents=text)
-        reply = (resp.text or "Пустой ответ").strip()
+        response = model.generate_content(text)
+        reply = (response.text or "Пустой ответ").strip()
     except Exception as e:
         reply = f"Ошибка: {e}"
 
