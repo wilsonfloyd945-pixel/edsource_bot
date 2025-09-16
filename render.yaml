@@ -9,3 +9,5 @@ services:
         sync: false
       - key: Z_AI_API_KEY
         sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
