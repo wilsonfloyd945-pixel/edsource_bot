@@ -4,6 +4,7 @@ import httpx
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 Z_AI_API_KEY = os.environ["Z_AI_API_KEY"]
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "default_secret")
 
 app = FastAPI()
 
@@ -11,8 +12,11 @@ app = FastAPI()
 def health():
     return {"ok": True}
 
-@app.post("/webhook")
-async def tg_webhook(request: Request):
+@app.post("/webhook/{path_secret}")
+async def tg_webhook(request: Request, path_secret: str):
+    # Проверяем секрет из URL пути
+    if path_secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="bad secret")
 
     update = await request.json()
     msg = update.get("message") or {}
