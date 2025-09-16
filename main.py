@@ -20,7 +20,7 @@ def health():
 async def tg_webhook(request: Request,
                      path_secret: str,
                      x_telegram_bot_api_secret_token: str | None = Header(None)):
-    if path_secret != WEBHOOK_SECRET or x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
+    if x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="bad secret")
 
     update = await request.json()
