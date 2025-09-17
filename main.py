@@ -28,19 +28,23 @@ async def tg_webhook(request: Request, path_secret: str):
 
     try:
         # Отправляем запрос к z.ai API
-        zai_url = "https://api.z.ai/v1/chat/completions"
+        zai_url = "https://api.z.ai/api/paas/v4/chat/completions"
         api_key = Z_AI_API_KEY.strip().replace('\n', '').replace('\r', '')
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en"
         }
         data = {
-            "model": "zephyr-7b-beta",
+            "model": "glm-4.5",
             "messages": [
-                {"role": "user", "content": text}
+                {
+                    "role": "user",
+                    "content": text
+                }
             ],
-            "max_tokens": 1000,
-            "temperature": 0.7
+            "temperature": 0.6,
+            "stream": False
         }
         
         async with httpx.AsyncClient(timeout=30) as http:
