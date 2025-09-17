@@ -29,8 +29,9 @@ async def tg_webhook(request: Request, path_secret: str):
     try:
         # Отправляем запрос к z.ai API
         zai_url = "https://api.z.ai/v1/chat/completions"
+        api_key = Z_AI_API_KEY.strip().replace('\n', '').replace('\r', '')
         headers = {
-            "Authorization": f"Bearer {Z_AI_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         data = {
