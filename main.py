@@ -30,6 +30,9 @@ PER_CHAT_COOLDOWN = float(os.environ.get("PER_CHAT_COOLDOWN", "0.7"))
 # Таймауты клиента HTTP
 HTTPX_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=60.0)
 
+# Сторож-таймаут на обращение к модели (сек)
+MODEL_WATCHDOG_SECONDS = int(os.environ.get("MODEL_WATCHDOG_SECONDS", "25"))
+
 # -------------------- APP ---------------------
 app = FastAPI()
 http_client: Optional[httpx.AsyncClient] = None
@@ -140,15 +143,18 @@ async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] 
         logger.exception(f"Telegram sendMessage exception: {e}")
         return None
 
-async def tg_edit_message(chat_id: int, message_id: int, text: str):
+async def tg_edit_message(chat_id: int, message_id: int, text: str) -> bool:
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
     try:
         tr = await http_client.post(url, json=payload)
         if tr.is_error:
             logger.error(f"Telegram editMessageText error {tr.status_code}: {tr.text[:300]}")
+            return False
+        return True
     except Exception as e:
         logger.exception(f"Telegram editMessageText exception: {e}")
+        return False
 
 async def tg_send_action(chat_id: int, action: str = "typing"):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction"
@@ -415,15 +421,33 @@ async def tg_webhook(request: Request, path_secret: str):
             {"role": "system", "content": SYSTEM_PROMPT_FORMATTER},
             {"role": "user", "content": user_payload},
         ]
-        raw = await call_zai(messages)
-        formatted = first_formatted_line(raw, fallback_link=parts.get("link"), fallback_meta=parts.get("meta"))
-        if len(formatted) > 4096:
-            formatted = formatted[:4090] + "…"
 
+        final_text = None
+        error_text = None
+        try:
+            raw = await asyncio.wait_for(call_zai(messages), timeout=MODEL_WATCHDOG_SECONDS)
+            formatted = first_formatted_line(
+                raw,
+                fallback_link=parts.get("link"),
+                fallback_meta=parts.get("meta"),
+            )
+            if len(formatted) > 4096:
+                formatted = formatted[:4090] + "…"
+            final_text = formatted
+
+        except asyncio.TimeoutError:
+            error_text = "Сервис отвечает дольше обычного. Попробуйте ещё раз чуть позже."
+        except Exception as e:
+            logger.exception(f"format_citation pipeline error: {e}")
+            error_text = "Не удалось оформить источник. Попробуйте ещё раз."
+
+        out = final_text or error_text or "Неизвестная ошибка."
         if placeholder_id:
-            await tg_edit_message(chat_id, placeholder_id, formatted)
+            ok = await tg_edit_message(chat_id, placeholder_id, out)
+            if not ok:
+                await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
         else:
-            await tg_send_message(chat_id, formatted, reply_markup=menu_keyboard())
+            await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
 
         # Оставляем режим включённым, но очищаем части — можно сразу оформлять следующий
         SESSIONS[chat_id] = {"mode": "format_citation", "parts": {"link": None, "meta": ""}}
@@ -431,13 +455,27 @@ async def tg_webhook(request: Request, path_secret: str):
 
     # ----- ОБЫЧНЫЙ ДИАЛОГ -----
     await tg_send_action(chat_id, "typing")
-    messages = [{"role": "user", "content": text}]
     placeholder_id = await tg_send_message(chat_id, "Думаю…", reply_markup=menu_keyboard())
-    raw = await call_zai(messages)
-    if len(raw) > 4096:
-        raw = raw[:4090] + "…"
+    messages = [{"role": "user", "content": text}]
+
+    final_text = None
+    error_text = None
+    try:
+        raw = await asyncio.wait_for(call_zai(messages), timeout=MODEL_WATCHDOG_SECONDS)
+        final_text = raw if raw else "Извините, модель вернула пустой ответ."
+        if len(final_text) > 4096:
+            final_text = final_text[:4090] + "…"
+    except asyncio.TimeoutError:
+        error_text = "Сервис отвечает дольше обычного. Попробуйте ещё раз чуть позже."
+    except Exception as e:
+        logger.exception(f"chat pipeline error: {e}")
+        error_text = "Произошла ошибка. Попробуйте ещё раз."
+
+    out = final_text or error_text or "Неизвестная ошибка."
     if placeholder_id:
-        await tg_edit_message(chat_id, placeholder_id, raw)
+        ok = await tg_edit_message(chat_id, placeholder_id, out)
+        if not ok:
+            await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
     else:
-        await tg_send_message(chat_id, raw, reply_markup=menu_keyboard())
+        await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
     return {"status": "sent"}
