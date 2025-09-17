@@ -22,7 +22,7 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "default_secret")
 ZAI_MODEL = os.environ.get("Z_AI_MODEL", "glm-4.5-Flash")
 
 # Предел параллельных запросов к модели (free-тариф любит 1–2)
-ZAI_CONCURRENCY_LIMIT = int(os.environ.get("ZAI_CONCURRENCY_LIMIT", "8"))
+ZAI_CONCURRENCY_LIMIT = int(os.environ.get("ZAI_CONCURRENCY_LIMIT", "2"))
 
 # Анти-спам по чату (секунды между запросами от одного пользователя)
 PER_CHAT_COOLDOWN = float(os.environ.get("PER_CHAT_COOLDOWN", "0.7"))
@@ -495,5 +495,6 @@ async def tg_webhook(request: Request, path_secret: str):
     else:
         await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
     return {"status": "sent"}
+
 
 
