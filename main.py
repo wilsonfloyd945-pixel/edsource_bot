@@ -6,7 +6,7 @@ import re
 import random
 from time import monotonic
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from fastapi import FastAPI, Request, HTTPException
 import httpx
@@ -40,6 +40,11 @@ http_client: Optional[httpx.AsyncClient] = None
 zai_semaphore = asyncio.Semaphore(ZAI_CONCURRENCY_LIMIT)
 
 # Простая "сессия" по чату (in-memory)
+# Структура для режима форматтера:
+# SESSIONS[chat_id] = {
+#     "mode": "format_citation",
+#     "parts": {"link": Optional[str], "meta": str}
+# }
 SESSIONS: Dict[int, Dict[str, Any]] = {}
 
 # Анти-спам трекер по чатам
@@ -49,7 +54,7 @@ LAST_HIT: dict[int, float] = {}
 MENU_BTN_FORMAT = "Оформить источник внутри текста"
 PROMPT_ENTER_SOURCE = (
     "Пришлите, пожалуйста, источник с гиперссылкой (URL) и данными. "
-    "Я оформлю его строго в одну строку нужного вида."
+    "Можно по частям, в любом порядке. Я соберу и оформлю в одну строку."
 )
 CANCEL_MSG = "Режим форматирования отключён. Чтобы начать заново — /menu"
 HELP_MSG = (
@@ -84,25 +89,14 @@ SYSTEM_PROMPT_FORMATTER = """
 5) Сохраняй регистр и пунктуацию названия/журнала как во входных данных.
 6) Ничего не выдумывай. Если какого-то элемента нет — просто не пиши его.
 7) Если нет ни URL, ни DOI — ответь ровно: Требуется гиперссылка на источник.
-8) Если ты не видишь название статьи или место публикации, или сомневаешься, что это оно, проси у пользователя уточнить, прежде чем дать ответ.
-
-
-Пример:
-Вход:
-Ardisson Korat A. V., ... DOI: 10.1016/j.ajcnut.2023.11.010.
-Ссылка: https://linkinghub.elsevier.com/retrieve/pii/S0002916523662823
-
-ОТВЕТ (строго одна строка):
-(https://linkinghub.elsevier.com/retrieve/pii/S0002916523662823 'Dietary protein intake in midlife in relation to healthy aging - results from the prospective Nurses' Health Study cohort // The American Journal of Clinical Nutrition. — 2024. — Vol. 119, No. 2. — P. 271-282. — DOI: 10.1016/j.ajcnut.2023.11.010')
+8) Если ты не видишь название статьи или место публикации, или сомневаешься, что это оно, попроси у пользователя уточнить, прежде чем дать ответ.
 """.strip()
-
 
 # -------------------- LIFECYCLE ---------------------
 @app.on_event("startup")
 async def on_startup():
     global http_client
     http_client = httpx.AsyncClient(timeout=HTTPX_TIMEOUT)
-
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -111,9 +105,9 @@ async def on_shutdown():
         await http_client.aclose()
         http_client = None
 
-
-# -------------------- UTILS ---------------------
-async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None):
+# -------------------- TELEGRAM HELPERS ---------------------
+async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None) -> Optional[int]:
+    """Отправка сообщения. Возвращает message_id (для последующего редактирования)."""
     send_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
@@ -122,9 +116,48 @@ async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] 
         tr = await http_client.post(send_url, json=payload)
         if tr.is_error:
             logger.error(f"Telegram sendMessage error {tr.status_code}: {tr.text[:300]}")
+            return None
+        data = tr.json()
+        return data.get("result", {}).get("message_id")
     except Exception as e:
         logger.exception(f"Telegram sendMessage exception: {e}")
+        return None
 
+async def tg_edit_message(chat_id: int, message_id: int, text: str):
+    """Редактирование текста ранее отправленного сообщения."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    try:
+        tr = await http_client.post(url, json=payload)
+        if tr.is_error:
+            logger.error(f"Telegram editMessageText error {tr.status_code}: {tr.text[:300]}")
+    except Exception as e:
+        logger.exception(f"Telegram editMessageText exception: {e}")
+
+async def tg_send_action(chat_id: int, action: str = "typing"):
+    """Показываем «набирает…» (действует ~5 сек)."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction"
+    payload = {"chat_id": chat_id, "action": action}
+    try:
+        await http_client.post(url, json=payload)
+    except Exception:
+        pass  # не критично
+
+# -------------------- TEXT UTILS ---------------------
+_URL_RE = re.compile(r"(https?://[^\s<>')]+)", re.IGNORECASE)
+
+def extract_url_and_meta(text: str) -> Tuple[Optional[str], str]:
+    """Выделяет первый URL и остальной текст (meta)."""
+    text = (text or "").strip()
+    if not text:
+        return None, ""
+    m = _URL_RE.search(text)
+    if not m:
+        return None, text
+    url = m.group(1)
+    # выкидываем ссылку из meta
+    meta = (text[:m.start()] + text[m.end():]).strip()
+    return url, meta
 
 def first_formatted_line(text: str) -> str:
     """
@@ -143,7 +176,7 @@ def first_formatted_line(text: str) -> str:
 
     return first or "Извините, модель вернула пустой ответ."
 
-
+# -------------------- Z.AI CALL ---------------------
 def _parse_retry_after(headers: httpx.Headers) -> float | None:
     # Retry-After может быть в секундах или в формате даты
     ra = headers.get("Retry-After")
@@ -157,7 +190,6 @@ def _parse_retry_after(headers: httpx.Headers) -> float | None:
             return max(0.0, (dt - datetime.utcnow()).total_seconds())
         except Exception:
             return None
-
 
 async def call_zai(messages: list) -> str:
     """
@@ -173,23 +205,21 @@ async def call_zai(messages: list) -> str:
     data = {
         "model": ZAI_MODEL,          # glm-4.5-Flash по умолчанию
         "messages": messages,
-        "temperature": 0.2,          # минимальная креативность для стабильного формата
+        "temperature": 0.2,          # низкая креативность для стабильного формата
         "stream": False,
     }
 
     max_attempts = 4
     base_sleep = 1.5
 
-    # Важный момент: ограничиваем конкурентность, чтобы не ловить массовые 429
     async with zai_semaphore:
         for attempt in range(1, max_attempts + 1):
             try:
                 r = await http_client.post(zai_url, headers=headers, json=data)
 
-                # Временные ошибки и лимиты — дадим шанс на повтор
                 if r.status_code in (429, 502, 503, 504):
                     ra = _parse_retry_after(r.headers) or (base_sleep * attempt)
-                    ra *= random.uniform(0.8, 1.2)  # небольшой джиттер
+                    ra *= random.uniform(0.8, 1.2)
                     logger.warning(
                         f"Z.AI transient {r.status_code}; retry in ~{ra:.2f}s; body: {r.text[:300]}"
                     )
@@ -209,7 +239,6 @@ async def call_zai(messages: list) -> str:
                 return reply or "Извините, модель вернула пустой ответ."
 
             except httpx.ReadTimeout:
-                # Модель долго отвечает — даём ещё попытки с увеличением ожидания
                 if attempt < max_attempts:
                     ra = (base_sleep * (attempt + 1)) * random.uniform(0.8, 1.2)
                     logger.warning(f"Z.AI read timeout; retry in ~{ra:.2f}s")
@@ -237,12 +266,10 @@ async def call_zai(messages: list) -> str:
 
     return "Не удалось получить ответ."
 
-
 # -------------------- ROUTES ---------------------
 @app.get("/")
 def health():
     return {"ok": True}
-
 
 @app.post("/webhook/{path_secret}")
 async def tg_webhook(request: Request, path_secret: str):
@@ -264,7 +291,6 @@ async def tg_webhook(request: Request, path_secret: str):
     now = monotonic()
     last = LAST_HIT.get(chat_id, 0.0)
     if now - last < PER_CHAT_COOLDOWN:
-        # Тихо игнорим слишком частые хиты, чтобы не накапливать очередь
         return {"status": "rate_limited"}
     LAST_HIT[chat_id] = now
 
@@ -293,7 +319,7 @@ async def tg_webhook(request: Request, path_secret: str):
 
     # --- Нажатие кнопки меню ---
     if text == MENU_BTN_FORMAT:
-        SESSIONS[chat_id] = {"mode": "format_citation"}
+        SESSIONS[chat_id] = {"mode": "format_citation", "parts": {"link": None, "meta": ""}}
         await tg_send_message(
             chat_id,
             "Режим: *Оформить источник внутри текста*.\n\n" + PROMPT_ENTER_SOURCE,
@@ -301,24 +327,69 @@ async def tg_webhook(request: Request, path_secret: str):
         )
         return {"status": "ok"}
 
-    # --- Режим форматирования источника ---
+    # --- Режим форматирования источника с контекстом ---
     session = SESSIONS.get(chat_id) or {}
     if session.get("mode") == "format_citation":
+        # инициализируем хранилище частей
+        parts = session.setdefault("parts", {"link": None, "meta": ""})
+
+        # достаём из сообщения ссылку (если есть) и мету
+        url_in, meta_in = extract_url_and_meta(text)
+
+        # обновляем накопленные части
+        if url_in:
+            parts["link"] = url_in.strip()
+        if meta_in:
+            # аккуратно добавляем, не плодя пробелы/переводы строк
+            parts["meta"] = (parts["meta"] + "\n" + meta_in).strip() if parts["meta"] else meta_in
+
+        # если обе части не собраны — просим недостающее и остаёмся в режиме
+        if not parts["link"] and not parts["meta"]:
+            await tg_send_message(chat_id, "Нужны данные об источнике и ссылка. Пришлите любую часть.")
+            return {"status": "ok"}
+        if not parts["link"]:
+            await tg_send_message(chat_id, "Есть данные. Пришлите, пожалуйста, гиперссылку (URL) на источник.")
+            return {"status": "ok"}
+        if not parts["meta"]:
+            await tg_send_message(chat_id, "Ссылка получена. Пришлите, пожалуйста, название статьи, издание, год и т. п.")
+            return {"status": "ok"}
+
+        # обе части есть — форматируем
+        # показываем «набирает…» и отправляем временное сообщение
+        await tg_send_action(chat_id, "typing")
+        placeholder_id = await tg_send_message(chat_id, "Оформляю…")
+
+        # собираем единый неупорядоченный вход для модели
+        user_payload = f"{parts['meta']}\n{parts['link']}".strip()
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_FORMATTER},
-            {"role": "user", "content": text},
+            {"role": "user", "content": user_payload},
         ]
         raw = await call_zai(messages)
         formatted = first_formatted_line(raw)
         if len(formatted) > 4096:
             formatted = formatted[:4090] + "…"
-        await tg_send_message(chat_id, formatted)
+
+        # редактируем «Оформляю…» в итог
+        if placeholder_id:
+            await tg_edit_message(chat_id, placeholder_id, formatted)
+        else:
+            await tg_send_message(chat_id, formatted)
+
+        # сбрасывать ли накопленные части?
+        # вариант: оставить, чтобы можно было прислать ещё одну ссылку/мету сразу после
+        SESSIONS[chat_id] = {"mode": "format_citation", "parts": {"link": None, "meta": ""}}
         return {"status": "sent"}
 
     # --- Базовый диалог с моделью (если не в режиме форматтера) ---
+    await tg_send_action(chat_id, "typing")
     messages = [{"role": "user", "content": text}]
+    placeholder_id = await tg_send_message(chat_id, "Думаю…")
     raw = await call_zai(messages)
     if len(raw) > 4096:
         raw = raw[:4090] + "…"
-    await tg_send_message(chat_id, raw)
+    if placeholder_id:
+        await tg_edit_message(chat_id, placeholder_id, raw)
+    else:
+        await tg_send_message(chat_id, raw)
     return {"status": "sent"}
