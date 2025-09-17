@@ -64,3 +64,4 @@ async def tg_webhook(request: Request, path_secret: str):
         await http.post(send_url, json={"chat_id": chat_id, "text": reply})
 
     return {"status": "sent"}
+
