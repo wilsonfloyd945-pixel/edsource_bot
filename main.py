@@ -159,21 +159,48 @@ def extract_url_and_meta(text: str) -> Tuple[Optional[str], str]:
     meta = (text[:m.start()] + text[m.end():]).strip()
     return url, meta
 
-def first_formatted_line(text: str) -> str:
+def first_formatted_line(text: str,
+                         fallback_link: Optional[str] = None,
+                         fallback_meta: Optional[str] = None) -> str:
     """
-    Страховка: если модель вдруг вернёт лишний текст,
-    вытащим первую подходящую строку вида: (http... '...').
+    Приводим ответ модели к строго требуемому виду.
+    Поддерживаем случаи:
+    - уже корректно: (https://... '...')
+    - без скобок:    https://... '...'  -> добавляем ()
+    - есть URL, но нет кавычек: собираем из fallback_link/meta
+    - если есть запасные части (link, meta) — можем собрать всё сами
     """
     text = (text or "").strip()
     first = text.splitlines()[0].strip() if "\n" in text else text
 
-    m = re.search(r"\((https?://[^ \t'()]+)\s+'([^']+)'\)", first)
-    if m:
+    # 1) уже корректная форма: (url '...')
+    m_ok = re.match(r"^\((https?://[^\s'()]+)\s+'([^']+)'\)$", first)
+    if m_ok:
         return first
 
+    # 2) форма без скобок: url '...'
+    m_noparens = re.match(r"^(https?://[^\s'()]+)\s+'([^']+)'$", first)
+    if m_noparens:
+        url, quoted = m_noparens.group(1), m_noparens.group(2)
+        return f"({url} '{quoted}')"
+
+    # 3) есть URL, но кавычек нет — попробуем собрать из fallback_meta
+    m_url_only = re.search(r"(https?://[^\s'()]+)", first)
+    if m_url_only and fallback_meta:
+        url = m_url_only.group(1)
+        meta = fallback_meta.strip()
+        if meta:
+            return f"({url} '{meta}')"
+
+    # 4) сообщение от нашей логики про отсутствие ссылки
     if "Требуется гиперссылка на источник" in text:
         return "Требуется гиперссылка на источник"
 
+    # 5) если у нас есть обе запасные части — соберём корректную строку сами
+    if fallback_link and fallback_meta:
+        return f"({fallback_link.strip()} '{fallback_meta.strip()}')"
+
+    # 6) на худой конец возвращаем первую строку или дефолт
     return first or "Извините, модель вернула пустой ответ."
 
 # -------------------- Z.AI CALL ---------------------
@@ -366,7 +393,7 @@ async def tg_webhook(request: Request, path_secret: str):
             {"role": "user", "content": user_payload},
         ]
         raw = await call_zai(messages)
-        formatted = first_formatted_line(raw)
+        formatted = first_formatted_line(raw, fallback_link=parts.get("link"), fallback_meta=parts.get("meta"))
         if len(formatted) > 4096:
             formatted = formatted[:4090] + "…"
 
@@ -393,3 +420,4 @@ async def tg_webhook(request: Request, path_secret: str):
     else:
         await tg_send_message(chat_id, raw)
     return {"status": "sent"}
+
