@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import json
 import re
 import random
 from time import monotonic
@@ -22,36 +21,34 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "default_secret")
 # Бесплатная модель Z.AI по умолчанию
 ZAI_MODEL = os.environ.get("Z_AI_MODEL", "glm-4.5-Flash")
 
-# Предел параллельных запросов к модели (очень важно, чтобы не ловить 429 High concurrency)
-# Для бесплатного пула обычно безопасно 1–2. При большом наплыве лучше 1.
+# Предел параллельных запросов к модели (free-тариф любит 1–2)
 ZAI_CONCURRENCY_LIMIT = int(os.environ.get("ZAI_CONCURRENCY_LIMIT", "2"))
 
 # Анти-спам по чату (секунды между запросами от одного пользователя)
 PER_CHAT_COOLDOWN = float(os.environ.get("PER_CHAT_COOLDOWN", "0.7"))
 
-# Таймауты клиента HTTP: увеличенный read и pool для «тяжёлых» ответов модели
+# Таймауты клиента HTTP
 HTTPX_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=60.0)
 
 # -------------------- APP ---------------------
 app = FastAPI()
 http_client: Optional[httpx.AsyncClient] = None
 
-# Ограничение одновременных обращений к модели
+# Ограничение одновременных обращений к модели (можно переключать «безопасный режим»)
 zai_semaphore = asyncio.Semaphore(ZAI_CONCURRENCY_LIMIT)
+SAFE_MODE = False  # когда True — семафор = 1
 
-# Простая "сессия" по чату (in-memory)
-# Структура для режима форматтера:
-# SESSIONS[chat_id] = {
-#     "mode": "format_citation",
-#     "parts": {"link": Optional[str], "meta": str}
-# }
+# Состояния по чатам
 SESSIONS: Dict[int, Dict[str, Any]] = {}
-
-# Анти-спам трекер по чатам
 LAST_HIT: dict[int, float] = {}
 
-# Тексты интерфейса
+# -------------------- ТЕКСТЫ И КНОПКИ ---------------------
 MENU_BTN_FORMAT = "Оформить источник внутри текста"
+BTN_CLEAR = "🧹 Очистить контекст"
+BTN_MENU = "🏠 В меню"
+BTN_RESTART = "🔄 Перезапуск"
+BTN_FIX = "🛠 Починить сбои"
+
 PROMPT_ENTER_SOURCE = (
     "Пришлите, пожалуйста, источник с гиперссылкой (URL) и данными. "
     "Можно по частям, в любом порядке. Я соберу и оформлю в одну строку."
@@ -65,10 +62,14 @@ HELP_MSG = (
     f"Кнопка меню: «{MENU_BTN_FORMAT}» — режим форматирования источника."
 )
 
-# Клавиатура меню (Reply Keyboard)
 def menu_keyboard() -> Dict[str, Any]:
+    # Всегда показываем полезные кнопки управления
     return {
-        "keyboard": [[{"text": MENU_BTN_FORMAT}]],
+        "keyboard": [
+            [{"text": MENU_BTN_FORMAT}],
+            [{"text": BTN_CLEAR}, {"text": BTN_MENU}],
+            [{"text": BTN_RESTART}, {"text": BTN_FIX}],
+        ],
         "resize_keyboard": True,
         "one_time_keyboard": False,
     }
@@ -92,11 +93,10 @@ SYSTEM_PROMPT_FORMATTER = """
 8) Если ты не видишь название статьи или место публикации, или сомневаешься, что это оно, попроси у пользователя уточнить, прежде чем дать ответ.
 """.strip()
 
-# -------------------- LIFECYCLE ---------------------
+# -------------------- ЖИЗНЕННЫЙ ЦИКЛ ---------------------
 @app.on_event("startup")
 async def on_startup():
-    global http_client
-    http_client = httpx.AsyncClient(timeout=HTTPX_TIMEOUT)
+    await _reinit_http_client()
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -105,15 +105,32 @@ async def on_shutdown():
         await http_client.aclose()
         http_client = None
 
+async def _reinit_http_client():
+    """Переинициализация HTTP-клиента (используется и кнопкой «Починить сбои»)."""
+    global http_client
+    try:
+        if http_client is not None:
+            await http_client.aclose()
+    except Exception:
+        pass
+    http_client = httpx.AsyncClient(timeout=HTTPX_TIMEOUT)
+
+def _set_safe_mode(enabled: bool):
+    """Вкл/выкл безопасный режим (семафор на 1)."""
+    global SAFE_MODE, zai_semaphore
+    SAFE_MODE = enabled
+    limit = 1 if SAFE_MODE else ZAI_CONCURRENCY_LIMIT
+    zai_semaphore = asyncio.Semaphore(limit)
+    logger.warning(f"SAFE_MODE={'ON' if SAFE_MODE else 'OFF'}; concurrency={limit}")
+
 # -------------------- TELEGRAM HELPERS ---------------------
 async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None) -> Optional[int]:
-    """Отправка сообщения. Возвращает message_id (для последующего редактирования)."""
-    send_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
-        tr = await http_client.post(send_url, json=payload)
+        tr = await http_client.post(url, json=payload)
         if tr.is_error:
             logger.error(f"Telegram sendMessage error {tr.status_code}: {tr.text[:300]}")
             return None
@@ -124,7 +141,6 @@ async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] 
         return None
 
 async def tg_edit_message(chat_id: int, message_id: int, text: str):
-    """Редактирование текста ранее отправленного сообщения."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
     try:
@@ -135,19 +151,17 @@ async def tg_edit_message(chat_id: int, message_id: int, text: str):
         logger.exception(f"Telegram editMessageText exception: {e}")
 
 async def tg_send_action(chat_id: int, action: str = "typing"):
-    """Показываем «набирает…» (действует ~5 сек)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction"
     payload = {"chat_id": chat_id, "action": action}
     try:
         await http_client.post(url, json=payload)
     except Exception:
-        pass  # не критично
+        pass
 
 # -------------------- TEXT UTILS ---------------------
 _URL_RE = re.compile(r"(https?://[^\s<>')]+)", re.IGNORECASE)
 
 def extract_url_and_meta(text: str) -> Tuple[Optional[str], str]:
-    """Выделяет первый URL и остальной текст (meta)."""
     text = (text or "").strip()
     if not text:
         return None, ""
@@ -155,36 +169,29 @@ def extract_url_and_meta(text: str) -> Tuple[Optional[str], str]:
     if not m:
         return None, text
     url = m.group(1)
-    # выкидываем ссылку из meta
     meta = (text[:m.start()] + text[m.end():]).strip()
     return url, meta
 
-def first_formatted_line(text: str,
-                         fallback_link: Optional[str] = None,
-                         fallback_meta: Optional[str] = None) -> str:
+def first_formatted_line(
+    text: str,
+    fallback_link: Optional[str] = None,
+    fallback_meta: Optional[str] = None,
+) -> str:
     """
-    Приводим ответ модели к строго требуемому виду.
-    Поддерживаем случаи:
-    - уже корректно: (https://... '...')
-    - без скобок:    https://... '...'  -> добавляем ()
-    - есть URL, но нет кавычек: собираем из fallback_link/meta
-    - если есть запасные части (link, meta) — можем собрать всё сами
+    Нормализуем ответ модели к виду: (URL 'META')
     """
     text = (text or "").strip()
     first = text.splitlines()[0].strip() if "\n" in text else text
 
-    # 1) уже корректная форма: (url '...')
     m_ok = re.match(r"^\((https?://[^\s'()]+)\s+'([^']+)'\)$", first)
     if m_ok:
         return first
 
-    # 2) форма без скобок: url '...'
     m_noparens = re.match(r"^(https?://[^\s'()]+)\s+'([^']+)'$", first)
     if m_noparens:
         url, quoted = m_noparens.group(1), m_noparens.group(2)
         return f"({url} '{quoted}')"
 
-    # 3) есть URL, но кавычек нет — попробуем собрать из fallback_meta
     m_url_only = re.search(r"(https?://[^\s'()]+)", first)
     if m_url_only and fallback_meta:
         url = m_url_only.group(1)
@@ -192,20 +199,16 @@ def first_formatted_line(text: str,
         if meta:
             return f"({url} '{meta}')"
 
-    # 4) сообщение от нашей логики про отсутствие ссылки
     if "Требуется гиперссылка на источник" in text:
         return "Требуется гиперссылка на источник"
 
-    # 5) если у нас есть обе запасные части — соберём корректную строку сами
     if fallback_link and fallback_meta:
         return f"({fallback_link.strip()} '{fallback_meta.strip()}')"
 
-    # 6) на худой конец возвращаем первую строку или дефолт
     return first or "Извините, модель вернула пустой ответ."
 
 # -------------------- Z.AI CALL ---------------------
 def _parse_retry_after(headers: httpx.Headers) -> float | None:
-    # Retry-After может быть в секундах или в формате даты
     ra = headers.get("Retry-After")
     if not ra:
         return None
@@ -230,9 +233,9 @@ async def call_zai(messages: list) -> str:
         "Accept-Language": "en-US,en",
     }
     data = {
-        "model": ZAI_MODEL,          # glm-4.5-Flash по умолчанию
+        "model": ZAI_MODEL,
         "messages": messages,
-        "temperature": 0.2,          # низкая креативность для стабильного формата
+        "temperature": 0.2,
         "stream": False,
     }
 
@@ -296,7 +299,7 @@ async def call_zai(messages: list) -> str:
 # -------------------- ROUTES ---------------------
 @app.get("/")
 def health():
-    return {"ok": True}
+    return {"ok": True, "safe_mode": SAFE_MODE, "concurrency": 1 if SAFE_MODE else ZAI_CONCURRENCY_LIMIT}
 
 @app.post("/webhook/{path_secret}")
 async def tg_webhook(request: Request, path_secret: str):
@@ -314,14 +317,43 @@ async def tg_webhook(request: Request, path_secret: str):
     if not text:
         return {"status": "ignored"}
 
-    # --- Анти-спам по чату ---
+    # Анти-спам по чату
     now = monotonic()
     last = LAST_HIT.get(chat_id, 0.0)
     if now - last < PER_CHAT_COOLDOWN:
         return {"status": "rate_limited"}
     LAST_HIT[chat_id] = now
 
-    # --- Команды ---
+    # ----- КНОПКИ-УПРАВЛЕНИЯ -----
+    if text == BTN_CLEAR:
+        sess = SESSIONS.get(chat_id)
+        if sess and sess.get("mode") == "format_citation":
+            sess["parts"] = {"link": None, "meta": ""}
+            await tg_send_message(chat_id, "Контекст очищен. Пришлите ссылку/данные.", reply_markup=menu_keyboard())
+        else:
+            await tg_send_message(chat_id, "Контекст и так пуст. Нажмите «Оформить источник внутри текста».", reply_markup=menu_keyboard())
+        return {"status": "ok"}
+
+    if text == BTN_MENU:
+        SESSIONS.pop(chat_id, None)
+        await tg_send_message(chat_id, "Вы в меню. Выберите действие:", reply_markup=menu_keyboard())
+        return {"status": "ok"}
+
+    if text == BTN_RESTART:
+        SESSIONS.pop(chat_id, None)
+        await tg_send_message(chat_id, "Перезапуск. Готов к работе.\n\n" + HELP_MSG, reply_markup=menu_keyboard())
+        return {"status": "ok"}
+
+    if text == BTN_FIX:
+        # Переключаем безопасный режим и переинициализируем клиент.
+        _set_safe_mode(not SAFE_MODE)
+        LAST_HIT.clear()
+        await _reinit_http_client()
+        state = "включён (конкурентность = 1)" if SAFE_MODE else f"выключен (конкурентность = {ZAI_CONCURRENCY_LIMIT})"
+        await tg_send_message(chat_id, f"🛠 Безопасный режим {state}. Клиент сети переинициализирован.", reply_markup=menu_keyboard())
+        return {"status": "ok"}
+
+    # ----- КОМАНДЫ -----
     if text.startswith("/start"):
         SESSIONS.pop(chat_id, None)
         await tg_send_message(
@@ -344,7 +376,7 @@ async def tg_webhook(request: Request, path_secret: str):
         await tg_send_message(chat_id, CANCEL_MSG, reply_markup=menu_keyboard())
         return {"status": "ok"}
 
-    # --- Нажатие кнопки меню ---
+    # ----- НАЖАТИЕ ОСНОВНОЙ КНОПКИ МЕНЮ -----
     if text == MENU_BTN_FORMAT:
         SESSIONS[chat_id] = {"mode": "format_citation", "parts": {"link": None, "meta": ""}}
         await tg_send_message(
@@ -354,39 +386,30 @@ async def tg_webhook(request: Request, path_secret: str):
         )
         return {"status": "ok"}
 
-    # --- Режим форматирования источника с контекстом ---
+    # ----- РЕЖИМ ФОРМАТТЕРА С КОНТЕКСТОМ -----
     session = SESSIONS.get(chat_id) or {}
     if session.get("mode") == "format_citation":
-        # инициализируем хранилище частей
         parts = session.setdefault("parts", {"link": None, "meta": ""})
 
-        # достаём из сообщения ссылку (если есть) и мету
         url_in, meta_in = extract_url_and_meta(text)
-
-        # обновляем накопленные части
         if url_in:
             parts["link"] = url_in.strip()
         if meta_in:
-            # аккуратно добавляем, не плодя пробелы/переводы строк
             parts["meta"] = (parts["meta"] + "\n" + meta_in).strip() if parts["meta"] else meta_in
 
-        # если обе части не собраны — просим недостающее и остаёмся в режиме
         if not parts["link"] and not parts["meta"]:
-            await tg_send_message(chat_id, "Нужны данные об источнике и ссылка. Пришлите любую часть.")
+            await tg_send_message(chat_id, "Нужны данные об источнике и ссылка. Пришлите любую часть.", reply_markup=menu_keyboard())
             return {"status": "ok"}
         if not parts["link"]:
-            await tg_send_message(chat_id, "Есть данные. Пришлите, пожалуйста, гиперссылку (URL) на источник.")
+            await tg_send_message(chat_id, "Есть данные. Пришлите, пожалуйста, гиперссылку (URL) на источник.", reply_markup=menu_keyboard())
             return {"status": "ok"}
         if not parts["meta"]:
-            await tg_send_message(chat_id, "Ссылка получена. Пришлите, пожалуйста, название статьи, издание, год и т. п.")
+            await tg_send_message(chat_id, "Ссылка получена. Пришлите, пожалуйста, название статьи, издание, год и т. п.", reply_markup=menu_keyboard())
             return {"status": "ok"}
 
-        # обе части есть — форматируем
-        # показываем «набирает…» и отправляем временное сообщение
         await tg_send_action(chat_id, "typing")
-        placeholder_id = await tg_send_message(chat_id, "Оформляю…")
+        placeholder_id = await tg_send_message(chat_id, "Оформляю…", reply_markup=menu_keyboard())
 
-        # собираем единый неупорядоченный вход для модели
         user_payload = f"{parts['meta']}\n{parts['link']}".strip()
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT_FORMATTER},
@@ -397,27 +420,24 @@ async def tg_webhook(request: Request, path_secret: str):
         if len(formatted) > 4096:
             formatted = formatted[:4090] + "…"
 
-        # редактируем «Оформляю…» в итог
         if placeholder_id:
             await tg_edit_message(chat_id, placeholder_id, formatted)
         else:
-            await tg_send_message(chat_id, formatted)
+            await tg_send_message(chat_id, formatted, reply_markup=menu_keyboard())
 
-        # сбрасывать ли накопленные части?
-        # вариант: оставить, чтобы можно было прислать ещё одну ссылку/мету сразу после
+        # Оставляем режим включённым, но очищаем части — можно сразу оформлять следующий
         SESSIONS[chat_id] = {"mode": "format_citation", "parts": {"link": None, "meta": ""}}
         return {"status": "sent"}
 
-    # --- Базовый диалог с моделью (если не в режиме форматтера) ---
+    # ----- ОБЫЧНЫЙ ДИАЛОГ -----
     await tg_send_action(chat_id, "typing")
     messages = [{"role": "user", "content": text}]
-    placeholder_id = await tg_send_message(chat_id, "Думаю…")
+    placeholder_id = await tg_send_message(chat_id, "Думаю…", reply_markup=menu_keyboard())
     raw = await call_zai(messages)
     if len(raw) > 4096:
         raw = raw[:4090] + "…"
     if placeholder_id:
         await tg_edit_message(chat_id, placeholder_id, raw)
     else:
-        await tg_send_message(chat_id, raw)
+        await tg_send_message(chat_id, raw, reply_markup=menu_keyboard())
     return {"status": "sent"}
-
