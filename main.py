@@ -302,6 +302,20 @@ async def call_zai(messages: list) -> str:
 
     return "Не удалось получить ответ."
 
+
+async def tg_delete_message(chat_id: int, message_id: int) -> bool:
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage"
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    try:
+        tr = await http_client.post(url, json=payload)
+        if tr.is_error:
+            logger.error(f"Telegram deleteMessage error {tr.status_code}: {tr.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        logger.exception(f"Telegram deleteMessage exception: {e}")
+        return False
+
 # -------------------- ROUTES ---------------------
 @app.get("/")
 def health():
@@ -445,6 +459,8 @@ async def tg_webhook(request: Request, path_secret: str):
         if placeholder_id:
             ok = await tg_edit_message(chat_id, placeholder_id, out)
             if not ok:
+                # если редактирование запрещено: удалим плейсхолдер и пришлём результат заново
+                deleted = await tg_delete_message(chat_id, placeholder_id)
                 await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
         else:
             await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
@@ -479,3 +495,4 @@ async def tg_webhook(request: Request, path_secret: str):
     else:
         await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
     return {"status": "sent"}
+
