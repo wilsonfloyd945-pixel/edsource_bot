@@ -7,7 +7,7 @@ build:
   skip: false
 run:
   image: null
-  command: null
+  command: uvicorn main:app --host 0.0.0.0 --port 80
   args: null
   persistenceMount: /data
   containerPort: "80"
