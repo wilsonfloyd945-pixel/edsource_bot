@@ -263,7 +263,8 @@ async def handle_formatter_message(chat_id: int, text: str) -> None:
         if not parts.get("link"):
             await tg_send_message(chat_id, "Пришлите гиперссылку на источник (начинается с http/https).", reply_markup=menu_keyboard())
         elif not parts.get("meta"):
-            await tg_send_message(chat_id, "Пришлите данные об источнике (название, журнал/место публикации, год, том/номер, страницы, DOI).", reply_markup=menu_keyboard())ply_markup=menu_keyboard())
+            await tg_send_message(chat_id, "Пришлите данные об источнике (название, журнал/место публикации, год, том/номер, страницы, DOI).", reply_markup=menu_keyboard())
+
 
 async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Optional[int]) -> None:
     """
@@ -438,4 +439,5 @@ async def on_shutdown():
         except Exception:
             pass
     logger.info("HTTP client closed.")
+
 
