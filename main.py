@@ -232,27 +232,38 @@ async def handle_formatter_message(chat_id: int, text: str) -> None:
     parts = sess["parts"]
     txt = text.strip()
 
-    if is_link(txt):
-        parts["link"] = LINK_RE.search(txt).group(0)
+    # 1) Вытащим все ссылки в сообщении
+    urls = LINK_RE.findall(txt)
+
+    # 2) Если ссылка есть — сохраним первую
+    if urls:
+        if not parts.get("link"):
+            parts["link"] = urls[0]
+        # 3) Уберём все ссылки из текста, чтобы получить «метаданные»
+        meta_candidate = LINK_RE.sub("", txt).strip()
+        if meta_candidate:
+            if parts.get("meta"):
+                parts["meta"] = (parts["meta"] + " " + meta_candidate).strip()
+            else:
+                parts["meta"] = meta_candidate
     else:
-        # накапливаем «метаданные» источника
-        if parts["meta"]:
+        # 4) Ссылки нет — это «метаданные»
+        if parts.get("meta"):
             parts["meta"] = (parts["meta"] + " " + txt).strip()
         else:
             parts["meta"] = txt
 
-    # проверяем, достаточно ли данных
+    # 5) Если обе части есть — запускаем оформление
     if parts.get("link") and parts.get("meta"):
-        # ставим плейсхолдер и фоновую задачу
         await tg_send_action(chat_id, "typing")
         placeholder_id = await tg_send_message(chat_id, "Оформляю…", reply_markup=menu_keyboard())
         fire_and_forget(_format_worker(chat_id, parts.copy(), placeholder_id))
     else:
-        # просим недостающее
+        # Просим недостающее
         if not parts.get("link"):
             await tg_send_message(chat_id, "Пришлите гиперссылку на источник (начинается с http/https).", reply_markup=menu_keyboard())
         elif not parts.get("meta"):
-            await tg_send_message(chat_id, "Пришлите данные об источнике (название, журнал/место публикации, год, том/номер, страницы, DOI).", reply_markup=menu_keyboard())
+            await tg_send_message(chat_id, "Пришлите данные об источнике (название, журнал/место публикации, год, том/номер, страницы, DOI).", reply_markup=menu_keyboard())ply_markup=menu_keyboard())
 
 async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Optional[int]) -> None:
     """
@@ -427,3 +438,4 @@ async def on_shutdown():
         except Exception:
             pass
     logger.info("HTTP client closed.")
+
