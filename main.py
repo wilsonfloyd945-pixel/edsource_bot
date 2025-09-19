@@ -7,8 +7,9 @@ from time import monotonic
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 import httpx
+from fastapi.responses import JSONResponse
 
 # -------------------- ЛОГИ --------------------
 logger = logging.getLogger("uvicorn.error")
@@ -166,6 +167,44 @@ async def tg_send_action(chat_id: int, action: str = "typing"):
 
 # -------------------- TEXT UTILS ---------------------
 _URL_RE = re.compile(r"(https?://[^\s<>')]+)", re.IGNORECASE)
+
+
+# безопасный запуск фоновых корутин
+def fire_and_forget(coro):
+    try:
+        asyncio.create_task(coro)
+    except RuntimeError:
+        asyncio.get_event_loop().create_task(coro)
+
+async def handle_update_safe(update: dict):
+    """Вся логика обработки апдейта. Любые исключения ловим внутри, чтобы не ронять процесс."""
+    try:
+        chat_id = None
+        message = update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
+        if message:
+            chat_id = message["chat"]["id"]
+        # 👉 здесь вызывай свою существующую функцию обработки апдейтов,
+        # например: await process_update(update)
+        await process_update(update)  # <-- используй то, что уже было у тебя
+    except Exception:
+        logger.exception("handle_update_safe error")
+
+@app.post("/webhook/{path_secret}")
+async def telegram_webhook(path_secret: str, request: Request, background_tasks: BackgroundTasks):
+    # Проверяем секрет и ВСЕГДА отвечаем быстро
+    if path_secret != WEBHOOK_SECRET:
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+
+    try:
+        update = await request.json()
+    except Exception:
+        # даже если не смогли распарсить — отвечаем 200, чтобы не было 503
+        logger.exception("Bad Telegram update payload")
+        return JSONResponse({"ok": True})
+
+    # ставим задачу на фон (ответ 200 уйдет мгновенно)
+    background_tasks.add_task(handle_update_safe, update)
+    return JSONResponse({"ok": True})  # 👈 мгновенный 200
 
 def extract_url_and_meta(text: str) -> Tuple[Optional[str], str]:
     text = (text or "").strip()
@@ -495,6 +534,7 @@ async def tg_webhook(request: Request, path_secret: str):
     else:
         await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
     return {"status": "sent"}
+
 
 
 
