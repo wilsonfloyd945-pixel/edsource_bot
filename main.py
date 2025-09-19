@@ -356,9 +356,9 @@ async def tg_delete_message(chat_id: int, message_id: int) -> bool:
         return False
 
 # -------------------- ROUTES ---------------------
-@app.get("/")
-def health():
-    return {"ok": True, "safe_mode": SAFE_MODE, "concurrency": 1 if SAFE_MODE else ZAI_CONCURRENCY_LIMIT}
+@app.get("/healthz")
+def healthz():
+    return {"ok": True, "status": "up"}
 
 @app.post("/webhook/{path_secret}")
 async def tg_webhook(request: Request, path_secret: str):
@@ -534,6 +534,7 @@ async def tg_webhook(request: Request, path_secret: str):
     else:
         await tg_send_message(chat_id, out, reply_markup=menu_keyboard())
     return {"status": "sent"}
+
 
 
 
