@@ -1,14 +1,14 @@
 from typing import Optional, Dict, Any
-from .http_client import client
+from . import http_client
 from ..config.settings import TELEGRAM_API_BASE, logger
 
 async def tg_call(method: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if client is None:
+    if http_client.client is None:
         logger.error("HTTP client is not initialized")
         return None
     url = f"{TELEGRAM_API_BASE}/{method}"
     try:
-        r = await client.post(url, json=payload, timeout=15)
+        r = await http_client.client.post(url, json=payload, timeout=15)
         if r.status_code >= 400:
             logger.error(f"Telegram {method} error {r.status_code}: {r.text}")
         data = r.json()

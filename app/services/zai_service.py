@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict, List
-from .http_client import client
+from . import http_client
 from ..config.settings import (
     Z_AI_API_KEY, Z_AI_MODEL, ZAI_URL,
     ZAI_CONCURRENCY_LIMIT, logger
@@ -9,7 +9,7 @@ from ..config.settings import (
 zai_semaphore = asyncio.Semaphore(ZAI_CONCURRENCY_LIMIT)
 
 async def call_zai(messages: List[Dict[str, str]]) -> str:
-    if client is None:
+    if http_client.client is None:
         return "Сервис временно недоступен (HTTP клиент не инициализировался)."
     headers = {
         "Authorization": f"Bearer {Z_AI_API_KEY}",
@@ -26,7 +26,7 @@ async def call_zai(messages: List[Dict[str, str]]) -> str:
     for attempt in range(1, max_attempts + 1):
         async with zai_semaphore:
             try:
-                r = await client.post(ZAI_URL, headers=headers, json=data, timeout=25)
+                r = await http_client.client.post(ZAI_URL, headers=headers, json=data, timeout=25)
                 if r.status_code in (429, 502, 503, 504):
                     logger.warning(f"Z.AI transient {r.status_code}: {r.text[:200]}")
                     if attempt < max_attempts:
