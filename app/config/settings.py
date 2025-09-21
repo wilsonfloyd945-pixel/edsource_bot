@@ -26,3 +26,13 @@ MODEL_WATCHDOG_SECONDS  = int(os.environ.get("MODEL_WATCHDOG_SECONDS", "25"))
 TELEGRAM_API_BASE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ZAI_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 
+
+# какой провайдер LLM используем: 'zai' (по умолчанию) или 'deepseek'
+MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "zai").strip()
+
+# DeepSeek (используется, если MODEL_PROVIDER=deepseek)
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_MODEL   = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat").strip()
+DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
+
+

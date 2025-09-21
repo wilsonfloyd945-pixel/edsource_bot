@@ -4,7 +4,9 @@ from ..sessions import SESSIONS, ensure_session
 from ..formatting import LINK_RE, first_formatted_line
 from ..ui import SYSTEM_PROMPT_FORMATTER, menu_keyboard
 from ...services.telegram_service import tg_send_message, tg_edit_message, tg_send_action
-from ...services.zai_service import call_llm
+from ...config.settings import MODEL_PROVIDER
+from ...services.zai_service import call_llm as call_zai
+from ...services.deepseek_service import call_deepseek
 from ...config.settings import MODEL_WATCHDOG_SECONDS
 from ..tasks import fire_and_forget
 from datetime import datetime
@@ -63,7 +65,10 @@ async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Op
         {"role": "user", "content": user_payload},
     ]
     try:
-        raw = await asyncio.wait_for(call_llm(messages), timeout=MODEL_WATCHDOG_SECONDS)
+        if MODEL_PROVIDER == "deepseek":
+            raw = await asyncio.wait_for(call_deepseek(messages), timeout=MODEL_WATCHDOG_SECONDS)
+        else:
+            raw = await asyncio.wait_for(call_zai(messages), timeout=MODEL_WATCHDOG_SECONDS)
         formatted = first_formatted_line(raw, fallback_link=parts.get("link"), fallback_meta=parts.get("meta"))
         if len(formatted) > 4096:
             formatted = formatted[:4090] + "…"
