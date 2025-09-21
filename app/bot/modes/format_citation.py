@@ -60,7 +60,7 @@ async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Op
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT_FORMATTER},
-        {"role": "user", "content": payload},
+        {"role": "user", "content": user_payload},
     ]
     try:
         raw = await asyncio.wait_for(call_llm(messages), timeout=MODEL_WATCHDOG_SECONDS)
