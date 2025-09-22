@@ -9,7 +9,7 @@ async def tg_call(method: str, payload: Dict[str, Any]) -> Optional[Dict[str, An
         return None
     url = f"{TELEGRAM_API_BASE}/{method}"
     try:
-        r = await http_client.post(url, json=payload, timeout=15)
+        r = await http_client.client.post(url, json=payload, timeout=15)
         if r.status_code >= 400:
             logger.error(f"Telegram {method} error {r.status_code}: {r.text}")
         data = r.json()
