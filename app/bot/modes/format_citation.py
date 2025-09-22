@@ -88,6 +88,9 @@ async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Op
         {"role": "user", "content": user_payload},
     ]
     try:
+        sess = ensure_session(chat_id)
+        provider = (sess.get("llm") or MODEL_PROVIDER or "amvera").lower()
+        
         if MODEL_PROVIDER == "amvera":
             res = await amvera_chat(user_payload, system_text=SYSTEM_PROMPT_FORMATTER)
             if res.get("ok"):
