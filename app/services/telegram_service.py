@@ -30,14 +30,12 @@ async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[Dict[s
     return None
 
 async def tg_edit_message(chat_id: int, message_id: int, text: str) -> bool:
-    resp = await tg_call("editMessageText", {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    })
-    return bool(resp and resp.get("ok"))
+    resp = await tg_call("editMessageText", {...})
+    if not resp or not resp.get("ok"):
+        # если не получилось — просто отправляем новое сообщение
+        await tg_send_message(chat_id, text)
+        return False
+    return True
 
 async def tg_send_action(chat_id: int, action: str = "typing") -> None:
     await tg_call("sendChatAction", {"chat_id": chat_id, "action": action})
