@@ -1,5 +1,5 @@
 from typing import Any, Dict
-from .sessions import ensure_session, set_session
+from .sessions import ensure_session, SESSIONS
 from .rate_limit import allow
 from .commands import cmd_start, cmd_menu, cmd_clear, cmd_restart, cmd_fix
 from .modes import format_citation
@@ -40,8 +40,9 @@ async def route_update(update: Dict[str, Any]) -> None:
                 await tg_send_message(chat_id, "Выбери модель:", reply_markup=model_keyboard())
                 return
 
+            # сохраняем выбор модели прямо в сессии
             sess["llm"] = choice  # 'amvera' | 'deepseek' | 'zai'
-            set_session(chat_id, sess)
+            SESSIONS[chat_id] = sess
 
             confirm = {
                 "amvera": "✅ Выбрана LLaMA 3.1 8B (Amvera).",
