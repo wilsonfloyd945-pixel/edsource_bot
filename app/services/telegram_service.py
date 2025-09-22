@@ -36,41 +36,92 @@ async def tg_call(method: str, payload: Dict[str, Any], suppress_cant_edit: bool
         return None
 
 
-async def tg_send_message(chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> Optional[int]:
+from typing import Optional, Dict, Any
+from .http_client import client
+from ..config.settings import TELEGRAM_API_BASE, logger
+
+async def tg_call(method: str, payload: Dict[str, Any], *,
+                  suppress_cant_edit: bool = False) -> Optional[Dict[str, Any]]:
+    if client is None:
+        logger.error("HTTP client is not initialized")
+        return None
+
+    url = f"{TELEGRAM_API_BASE}/{method}"
+    try:
+        r = await client.post(url, json=payload, timeout=15)
+        ctype = r.headers.get("content-type", "")
+        data = r.json() if ctype.startswith("application/json") else {}
+
+        ok = bool(data.get("ok", False))
+        if not ok:
+            desc = (data.get("description") or r.text or "").lower()
+            # Спец-кейс: невозможность редактирования — не шумим
+            if suppress_cant_edit and "can't be edited" in desc:
+                logger.info(f"Telegram {method} skipped (can't edit): {data}")
+                return None
+
+            logger.warning(
+                "Telegram %s failed: status=%s, description=%s, payload_keys=%s",
+                method, r.status_code, data.get("description"), list(payload.keys())
+            )
+            return None
+
+        return data
+
+    except Exception:
+        logger.exception(f"Telegram call failed: {method}")
+        return None
+
+
+async def tg_send_message(chat_id: int, text: str,
+                          reply_markup: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """
+    Отправка в 2 попытки:
+    1) HTML + reply_markup
+    2) если провал — без parse_mode и без reply_markup (на случай ошибок HTML/клавиатуры/ограничений)
+    Возвращает message_id или None.
+    """
+    txt = (text or "").strip()
+    logger.info("tg_send_message: chat_id=%s, len=%s", chat_id, len(txt))
+
+    # Первая попытка — как обычно
     resp = await tg_call("sendMessage", {
         "chat_id": chat_id,
-        "text": text,
+        "text": txt,
         "reply_markup": reply_markup,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     })
-    if resp and resp.get("result"):
+    if resp and resp.get("result") and resp["result"].get("message_id"):
         return resp["result"]["message_id"]
+
+    # Вторая попытка — без HTML и без разметки
+    logger.info("tg_send_message: retry without HTML/markup")
+    resp2 = await tg_call("sendMessage", {
+        "chat_id": chat_id,
+        "text": txt,
+        # без reply_markup
+        "disable_web_page_preview": True,
+    })
+    if resp2 and resp2.get("result") and resp2["result"].get("message_id"):
+        return resp2["result"]["message_id"]
+
+    logger.warning("tg_send_message: failed to deliver to chat_id=%s", chat_id)
     return None
 
+
 async def tg_edit_message(chat_id: int, message_id: int, text: str) -> bool:
-    """
-    Пытаемся отредактировать плейсхолдер.
-    Если Telegram вернёт 400 'message can't be edited' (или не удастся),
-    просто отправляем новое сообщение и возвращаем False.
-    """
-    # Пакет для редактирования
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
-        "text": text,
+        "text": (text or "").strip(),
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-
-    # Пробуем редактировать
     resp = await tg_call("editMessageText", payload, suppress_cant_edit=True)
-
-    # Если редактирование удалось — ок
     if resp and resp.get("ok"):
         return True
-
-    # Иначе — отправляем новое сообщение, чтобы пользователь всё равно получил результат
+    # Фолбэк — отправим как новое
     await tg_send_message(chat_id, text)
     return False
 
