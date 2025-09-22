@@ -14,8 +14,6 @@ from ..splitter import split_sources
 from ...services.amvera_service import amvera_chat
 
 
-
-
 async def enter_mode(chat_id: int) -> None:
     SESSIONS[chat_id] = {"mode": "format_citation", "parts": {"link": None, "meta": ""}}
     await tg_send_message(
@@ -101,8 +99,6 @@ async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Op
         else:
             raw = await asyncio.wait_for(call_zai(messages), timeout=MODEL_WATCHDOG_SECONDS)
 
-        
-        
         formatted = first_formatted_line(raw, fallback_link=parts.get("link"), fallback_meta=parts.get("meta"))
         if len(formatted) > 4096:
             formatted = formatted[:4090] + "…"
