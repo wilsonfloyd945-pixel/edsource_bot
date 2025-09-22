@@ -50,5 +50,21 @@ SYSTEM_PROMPT_FORMATTER = (
     "Общие требования: одна строка; круглые скобки снаружи; содержимое в одинарных кавычках; не добавляй авторов/PMID/DOI/аффилиации/случайные подписи."
 )
 
+def model_keyboard():
+    # Инлайн-клавиатура выбора LLM
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "⚡ LLaMA 3.1 8B (Amvera)", "callback_data": "model:amvera"},
+            ],
+            [
+                {"text": "DeepSeek", "callback_data": "model:deepseek"},
+                {"text": "ZAI", "callback_data": "model:zai"},
+            ],
+            [
+                {"text": "ℹ️ Что выбрать?", "callback_data": "model:help"},
+            ],
+        ]
+    }
 
 

@@ -1,9 +1,12 @@
 from typing import Any, Dict
-from .sessions import ensure_session
+from .sessions import ensure_session, set_session
 from .rate_limit import allow
 from .commands import cmd_start, cmd_menu, cmd_clear, cmd_restart, cmd_fix
 from .modes import format_citation
 from .callbacks import handle_callback
+from .ui import model_keyboard
+from ..services.telegram_service import tg_send_message, tg_edit_message
+
 
 async def route_update(update: Dict[str, Any]) -> None:
     """
@@ -20,6 +23,37 @@ async def route_update(update: Dict[str, Any]) -> None:
             return
         chat_id = message["chat"]["id"]
         data = (cb.get("data") or "").strip()
+
+        # --- выбор модели ---
+        if data.startswith("model:"):
+            choice = data.split(":", 1)[1]
+            sess = ensure_session(chat_id)
+
+            if choice == "help":
+                text = (
+                    "• ⚡ LLaMA 3.1 8B (Amvera) — быстрее, хватает для форматирования.\n"
+                    "• DeepSeek — быстрый, но результат может плавать.\n"
+                    "• ZAI — как запасной провайдер.\n\n"
+                    "Выбери модель:"
+                )
+                await tg_edit_message(chat_id, message["message_id"], text)
+                await tg_send_message(chat_id, "Выбери модель:", reply_markup=model_keyboard())
+                return
+
+            sess["llm"] = choice  # 'amvera' | 'deepseek' | 'zai'
+            set_session(chat_id, sess)
+
+            confirm = {
+                "amvera": "✅ Выбрана LLaMA 3.1 8B (Amvera).",
+                "deepseek": "✅ Выбран DeepSeek.",
+                "zai": "✅ Выбран ZAI.",
+            }.get(choice, f"✅ Модель: {choice}")
+
+            await tg_edit_message(chat_id, message["message_id"], confirm)
+            await format_citation.enter_mode(chat_id)
+            return
+
+        # остальные коллбеки
         await handle_callback(chat_id, data)
         return
 
@@ -37,15 +71,23 @@ async def route_update(update: Dict[str, Any]) -> None:
 
     # системные команды
     if text in ("🏠 Меню", "/start", "start", "/menu"):
-        await cmd_start(chat_id); return
+        await cmd_start(chat_id)
+        return
     if text == "🔄 Очистить контекст":
-        await cmd_clear(chat_id); return
+        await cmd_clear(chat_id)
+        return
     if text == "♻️ Перезапуск":
-        await cmd_restart(chat_id); return
+        await cmd_restart(chat_id)
+        return
     if text == "🛠 Починить сбои":
-        await cmd_fix(chat_id); return
+        await cmd_fix(chat_id)
+        return
+    if text in ("/model", "Сменить модель", "Выбрать модель"):
+        await tg_send_message(chat_id, "Выбери модель:", reply_markup=model_keyboard())
+        return
     if text == "📚 Оформить источник внутри текста":
-        await format_citation.enter_mode(chat_id); return
+        await format_citation.enter_mode(chat_id)
+        return
 
     # режимы
     sess = ensure_session(chat_id)
