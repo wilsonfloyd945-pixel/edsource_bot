@@ -77,6 +77,9 @@ async def handle_message(chat_id: int, text: str) -> None:
 
 
 async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Optional[int]) -> None:
+
+    sess = ensure_session(chat_id)
+    provider = (sess.get("llm") or MODEL_PROVIDER or "amvera").lower()
     # сегодняшняя дата (для правовых источников нужно "Дата обращения")
     today = datetime.now().strftime("%d.%m.%Y")
 
@@ -88,18 +91,18 @@ async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Op
         {"role": "user", "content": user_payload},
     ]
     try:
-        sess = ensure_session(chat_id)
-        provider = (sess.get("llm") or MODEL_PROVIDER or "amvera").lower()
-        
-        if MODEL_PROVIDER == "amvera":
+
+        if provider == "amvera":
             res = await amvera_chat(user_payload, system_text=SYSTEM_PROMPT_FORMATTER)
             if res.get("ok"):
                 raw = res["text"]
             else:
                 raw = f"Ошибка Amvera: {res.get('error') or 'нет ответа'}"
-        elif MODEL_PROVIDER == "deepseek":
+
+        elif provider == "deepseek":
             raw = await asyncio.wait_for(call_deepseek(messages), timeout=MODEL_WATCHDOG_SECONDS)
-        else:
+
+        else:  # 'zai' или что-то ещё
             raw = await asyncio.wait_for(call_zai(messages), timeout=MODEL_WATCHDOG_SECONDS)
 
         formatted = first_formatted_line(raw, fallback_link=parts.get("link"), fallback_meta=parts.get("meta"))
