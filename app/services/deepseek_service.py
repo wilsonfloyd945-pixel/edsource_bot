@@ -6,6 +6,8 @@ from ..config.settings import (
     ZAI_CONCURRENCY_LIMIT, logger
 )
 
+from .llm_gate import semaphore  # новый импорт
+
 # используем тот же семафор, что и для Z.AI (можешь завести отдельный, если надо)
 deepseek_semaphore = asyncio.Semaphore(ZAI_CONCURRENCY_LIMIT)
 
@@ -30,7 +32,7 @@ async def call_deepseek(messages: List[Dict[str, str]]) -> str:
 
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
-        async with deepseek_semaphore:
+        async with semaphore:
             try:
                 r = await http_client.client.post(DEEPSEEK_URL, headers=headers, json=data, timeout=25)
                 if r.status_code in (429, 502, 503, 504):

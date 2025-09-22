@@ -35,4 +35,6 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_MODEL   = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat").strip()
 DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
 
+LLM_CONCURRENCY_LIMIT = int(os.environ.get("LLM_CONCURRENCY_LIMIT", "1"))
+
 

@@ -10,6 +10,9 @@ from ...services.deepseek_service import call_deepseek
 from ...config.settings import MODEL_WATCHDOG_SECONDS
 from ..tasks import fire_and_forget
 from datetime import datetime
+from ..splitter import split_sources
+
+
 
 
 async def enter_mode(chat_id: int) -> None:
@@ -25,6 +28,27 @@ async def handle_message(chat_id: int, text: str) -> None:
     sess = ensure_session(chat_id)
     parts = sess["parts"]
     txt = (text or "").strip()
+
+    pairs = split_sources(txt)
+    if len(pairs) > 1:
+        # Если в сообщении сразу несколько источников — обработаем их последовательно одним воркером
+        # Поставим небольшой “плейсхолдер”
+        await tg_send_action(chat_id, "typing")
+        placeholder_id = await tg_send_message(chat_id, f"Нашёл {len(pairs)} источника(ов). Обрабатываю по очереди…", reply_markup=menu_keyboard())
+
+        # Последовательно прогоняем каждый (meta, link)
+        for idx, (meta_i, link_i) in enumerate(pairs, start=1):
+            # Собираем parts-формат под существующий воркер
+            parts_i = {"meta": meta_i, "link": link_i}
+            # Можно обновить плейсхолдер статусом
+            if placeholder_id:
+                await tg_edit_message(chat_id, placeholder_id, f"Обрабатываю {idx}/{len(pairs)}…")
+            await _format_worker(chat_id, parts_i, None)  # последовательная обработка
+
+        # Завершаем сообщением “готово” (опционально)
+        if placeholder_id:
+            await tg_edit_message(chat_id, placeholder_id, "Готово ✅")
+        return
 
     urls = LINK_RE.findall(txt)
     if urls:
