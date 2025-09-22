@@ -37,4 +37,7 @@ DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
 
 LLM_CONCURRENCY_LIMIT = int(os.environ.get("LLM_CONCURRENCY_LIMIT", "1"))
 
-
+AMVERA_TOKEN = os.getenv("AMVERA_TOKEN", "")
+AMVERA_BASE = os.getenv("AMVERA_BASE", "https://kong-proxy.yc.amvera.ru/api/v1")
+AMVERA_MODEL = os.getenv("AMVERA_MODEL", "llama8b")
+AMVERA_TIMEOUT = int(os.getenv("AMVERA_TIMEOUT", "20"))
