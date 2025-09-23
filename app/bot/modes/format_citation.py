@@ -99,8 +99,9 @@ async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Op
             else:
                 raw = f"Ошибка Amvera: {res.get('error') or 'нет ответа'}"
 
-        elif provider == "deepseek":
+        elif provider == "deepseek-chat":
             raw = await asyncio.wait_for(call_deepseek(messages), timeout=MODEL_WATCHDOG_SECONDS)
+
 
         else:  # 'zai' или что-то ещё
             raw = await asyncio.wait_for(call_zai(messages), timeout=MODEL_WATCHDOG_SECONDS)
