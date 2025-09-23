@@ -77,9 +77,9 @@ async def handle_message(chat_id: int, text: str) -> None:
 
 
 async def _format_worker(chat_id: int, parts: Dict[str, Any], placeholder_id: Optional[int]) -> None:
-
     sess = ensure_session(chat_id)
-    provider = (sess.get("llm") or MODEL_PROVIDER or "amvera").lower()
+    provider = (sess.get("llm") or MODEL_PROVIDER or "amvera").lower()  
+    
     # сегодняшняя дата (для правовых источников нужно "Дата обращения")
     today = datetime.now().strftime("%d.%m.%Y")
 
